@@ -25,8 +25,8 @@ def print_banner(mode_name):
     CYAN, YELLOW, MAGENTA, BOLD, END = "\033[96m", "\033[93m", "\033[95m", "\033[1m", "\033[0m"
     banner = f"""
 {MAGENTA}{BOLD}###########################################
-#          🚀 AmirTunnel-Pro              #
-#      📢 Channel: @Telhost1              #
+#          🚀 BluTunnel                   #
+#      📢 Channel: @azadnamaa             #
 ###########################################{END}
 {CYAN}      AMIR
      (____)              {YELLOW}      .---.
@@ -147,6 +147,61 @@ def get_xray_ports(bridge_p, sync_p):
         return ports
     except Exception:
         return set()
+
+
+def run_shell(cmd):
+    subprocess.run(cmd, shell=True, check=False)
+
+
+def manage_tunnel_menu():
+    if os.name != "posix":
+        print("Manage Tunnel is available on Linux/systemd only.")
+        return
+
+    while True:
+        print("\n--- Manage Tunnel ---")
+        print("1) Status")
+        print("2) Restart")
+        print("3) Stop")
+        print("4) Start")
+        print("5) Back")
+        choice = input("Choice: ").strip()
+
+        if choice == "1":
+            run_shell("systemctl status blutunnel.service --no-pager -l")
+            run_shell("systemctl status blutunnel.timer --no-pager -l")
+        elif choice == "2":
+            run_shell("systemctl restart blutunnel.service")
+            print("blutunnel.service restarted.")
+        elif choice == "3":
+            run_shell("systemctl stop blutunnel.service")
+            print("blutunnel.service stopped.")
+        elif choice == "4":
+            run_shell("systemctl start blutunnel.service")
+            print("blutunnel.service started.")
+        elif choice == "5":
+            return
+        else:
+            print("Invalid choice.")
+
+
+def delete_tunnel():
+    if os.name != "posix":
+        print("Delete Tunnel is available on Linux/systemd only.")
+        return
+
+    confirm = input("Type DELETE to remove BluTunnel service and files: ").strip()
+    if confirm != "DELETE":
+        print("Delete cancelled.")
+        return
+
+    run_shell("systemctl stop blutunnel.service 2>/dev/null || true")
+    run_shell("systemctl disable blutunnel.service 2>/dev/null || true")
+    run_shell("systemctl disable blutunnel.timer 2>/dev/null || true")
+    run_shell("rm -f /etc/systemd/system/blutunnel.service /etc/systemd/system/blutunnel.timer")
+    run_shell("rm -rf /etc/blutunnel /opt/blutunnel")
+    run_shell("systemctl daemon-reload")
+    print("BluTunnel removed from this server.")
 
 
 async def start_europe(iran_ip=None, bridge_p=None, sync_p=None, show_banner=True):
@@ -320,9 +375,11 @@ def interactive_menu_choice():
         print_banner("MAIN MENU")
         print("1) Europe Server")
         print("2) Iran Server")
-        print("3) Exit")
+        print("3) Manage Tunnel")
+        print("4) Delete Tunnel")
+        print("5) Exit")
         choice = input("Choice: ").strip()
-        if choice in {"1", "2", "3"}:
+        if choice in {"1", "2", "3", "4", "5"}:
             return choice
         print("Invalid choice.")
 
@@ -345,8 +402,15 @@ if __name__ == "__main__":
                 )
             )
     else:
-        choice = interactive_menu_choice()
-        if choice == "1":
-            asyncio.run(start_europe())
-        elif choice == "2":
-            asyncio.run(start_iran())
+        while True:
+            choice = interactive_menu_choice()
+            if choice == "1":
+                asyncio.run(start_europe())
+            elif choice == "2":
+                asyncio.run(start_iran())
+            elif choice == "3":
+                manage_tunnel_menu()
+            elif choice == "4":
+                delete_tunnel()
+            else:
+                break
