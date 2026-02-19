@@ -1,89 +1,79 @@
 # BluTunnel
 
-High-performance reverse tunnel for exposing Iran-side services through a Europe server with automatic port sync.
+EN: High-performance reverse tunnel to expose Iran-side services through a Europe server with automatic port sync.  
+FA: یک تونل معکوس پرفورمنس‌بالا برای ارائه سرویس‌های سمت ایران از طریق سرور اروپا با همگام‌سازی خودکار پورت‌ها.
 
-## One-Command Install And Run
-Run this on your server:
+## One-Command Install | نصب با یک دستور
+EN: Run one of these on your server.  
+FA: یکی از دستورهای زیر را روی سرور اجرا کنید.
 
-### Iran server
+### Iran Server | سرور ایران
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ArkaXray/blutunnel/main/install.sh | sudo bash -s -- --mode iran --bridge-port 4430 --sync-port 4431 --auto-sync y
 ```
 
-### Europe server
+### Europe Server | سرور اروپا
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ArkaXray/blutunnel/main/install.sh | sudo bash -s -- --mode europe --iran-ip 1.2.3.4 --bridge-port 4430 --sync-port 4431
 ```
 
-The installer will:
-- place project files in `/opt/blutunnel`
-- write config to `/etc/blutunnel/blutunnel.env`
-- install and start `blutunnel.service` and `blutunnel.timer`
+EN: Installer actions  
+FA: کارهایی که نصاب انجام می‌دهد
+- EN: Copies files to `/opt/blutunnel`  
+  FA: فایل‌ها را در `/opt/blutunnel` قرار می‌دهد
+- EN: Writes config to `/etc/blutunnel/blutunnel.env`  
+  FA: تنظیمات را در `/etc/blutunnel/blutunnel.env` می‌نویسد
+- EN: Installs and starts `blutunnel.service` and `blutunnel.timer`  
+  FA: سرویس و تایمر را نصب و اجرا می‌کند
 
-## Why BluTunnel?
-- Reverse architecture: Europe node actively dials back to Iran bridge.
-- Auto-discovery mode for Xray ports on Europe.
-- Async I/O with large buffers for high throughput.
-- Simple deployment with `systemd` service + timer.
+## Features | ویژگی‌ها
+- EN: Reverse architecture (Europe dials back to Iran bridge)  
+  FA: معماری معکوس (اروپا به بریج ایران وصل می‌شود)
+- EN: Auto-discovery of Xray ports on Europe  
+  FA: شناسایی خودکار پورت‌های Xray در اروپا
+- EN: Async I/O with large socket buffers  
+  FA: ورودی/خروجی async با بافر بزرگ سوکت
+- EN: systemd-ready deployment  
+  FA: آماده‌ی استقرار با systemd
 
-## Architecture
-- **Europe mode**:
-  - Sends active service ports to Iran every few seconds (`sync` channel).
-  - Maintains a pool of reverse links to Iran (`bridge` channel).
-- **Iran mode**:
-  - Receives reverse links from Europe and keeps them in a connection pool.
-  - Opens listener ports and forwards inbound client traffic through an available reverse link.
+## Architecture | معماری
+- EN: Europe mode sends active ports via sync channel and keeps reverse links via bridge channel.  
+  FA: حالت اروپا پورت‌های فعال را از کانال sync می‌فرستد و لینک‌های معکوس را از کانال bridge نگه می‌دارد.
+- EN: Iran mode receives reverse links, opens listeners, and forwards user traffic.  
+  FA: حالت ایران لینک‌های معکوس را می‌گیرد، پورت‌ها را باز می‌کند و ترافیک کاربر را فوروارد می‌کند.
 
-## Requirements
+## Requirements | پیش‌نیازها
 - Python 3.8+
-- Linux server(s) for production usage
-- `ss` command available on Europe server (used for auto port detection)
-- `curl`, `git`, and `systemd` for one-command installer
+- Linux server
+- `ss` command (for Europe auto-detection)
+- `curl`, `git`, `systemd` (for one-command installer)
 
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Quick Start
-Run manually (interactive mode):
-
+## Manual Run | اجرای دستی
+### Interactive | تعاملی
 ```bash
 python3 blutunnel.py
 ```
 
-You will be prompted for mode:
-
-1. `Europe Server`
-2. `Iran Server`
-
-### Europe inputs
-- `Iran IP`
-- `Tunnel Bridge Port`
-- `Port Sync Port`
-
-### Iran inputs
-- `Tunnel Bridge Port`
-- `Port Sync Port`
-- `Auto-Sync Xray ports? (y/n)`
-  - `y`: ports are created automatically from Europe sync
-  - `n`: enter ports manually (`80,443,2083` style)
-
-Run manually (non-interactive CLI mode):
-
+### Non-interactive CLI | غیرتعاملی با آرگومان
 ```bash
 python3 blutunnel.py --mode europe --iran-ip 1.2.3.4 --bridge-port 4430 --sync-port 4431
 python3 blutunnel.py --mode iran --bridge-port 4430 --sync-port 4431 --auto-sync y
 ```
 
-## systemd Deployment
-Provided files:
+EN: Use `--manual-ports` when `--auto-sync n`.  
+FA: وقتی `--auto-sync n` است از `--manual-ports` استفاده کنید.
+
+```bash
+python3 blutunnel.py --mode iran --bridge-port 4430 --sync-port 4431 --auto-sync n --manual-ports 80,443,2083
+```
+
+## systemd Setup | تنظیمات systemd
+Files | فایل‌ها:
 - `systemd/blutunnel.service`
 - `systemd/blutunnel.timer`
+- `blutunnel.env.example`
 
-Example install:
-
+Install manually | نصب دستی:
 ```bash
 sudo cp systemd/blutunnel.service /etc/systemd/system/
 sudo cp systemd/blutunnel.timer /etc/systemd/system/
@@ -94,41 +84,36 @@ sudo systemctl enable --now blutunnel.service
 sudo systemctl enable --now blutunnel.timer
 ```
 
-Check status:
-
+Status | وضعیت:
 ```bash
 sudo systemctl status blutunnel.service
 sudo systemctl status blutunnel.timer
 ```
 
-Config file used by service:
-- `/etc/blutunnel/blutunnel.env`
-
-## Logs
-- App log file: `logs/blutunnel.log`
-- Realtime service log:
-
+## Logs | لاگ‌ها
+- File | فایل: `logs/blutunnel.log`
+- Journal | ژورنال:
 ```bash
 sudo journalctl -u blutunnel.service -f
 ```
 
-## Security Notes
-- Restrict `bridge` and `sync` ports with firewall rules.
-- Prefer running over private network or VPN between nodes.
-- Do not expose unnecessary listener ports.
+## Security Notes | نکات امنیتی
+- EN: Restrict bridge/sync ports with firewall rules.  
+  FA: پورت‌های bridge و sync را با فایروال محدود کنید.
+- EN: Prefer private network or VPN between servers.  
+  FA: بین سرورها شبکه خصوصی یا VPN ترجیح دارد.
+- EN: Do not expose unnecessary ports.  
+  FA: پورت‌های غیرضروری را باز نگذارید.
 
-## Troubleshooting
-- **No traffic forwarding**:
-  - Check both nodes can reach each other on bridge/sync ports.
-  - Verify Europe node has active reverse links.
-- **Ports not auto-created**:
-  - Ensure Xray process is visible in `ss -tlnp` output.
-  - Confirm sync port is open and reachable.
-- **Permission issues**:
-  - Run with sufficient privileges for low ports (<1024).
+## Troubleshooting | عیب‌یابی
+- EN: No forwarding -> verify reachability of bridge/sync ports on both nodes.  
+  FA: عدم فوروارد -> دسترسی دو طرف به پورت‌های bridge/sync را چک کنید.
+- EN: Auto-sync not working -> check `ss -tlnp` and Xray process visibility.  
+  FA: مشکل در auto-sync -> خروجی `ss -tlnp` و دیده‌شدن پروسه Xray را بررسی کنید.
+- EN: Permission errors on low ports -> run with root/systemd.  
+  FA: خطای دسترسی روی پورت‌های پایین -> با root/systemd اجرا کنید.
 
-## Project Structure
-
+## Project Structure | ساختار پروژه
 ```text
 .
 |-- blutunnel.py
@@ -142,5 +127,6 @@ sudo journalctl -u blutunnel.service -f
     `-- blutunnel.timer
 ```
 
-## License
-Add your preferred license (MIT/Apache-2.0/etc.) in a `LICENSE` file.
+## License | لایسنس
+EN: Add your preferred license in `LICENSE` (MIT / Apache-2.0 / ...).  
+FA: لایسنس موردنظر را در فایل `LICENSE` قرار دهید (مثل MIT یا Apache-2.0).
