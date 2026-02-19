@@ -6,6 +6,7 @@ ENV_DIR="/etc/blutunnel"
 SERVICE_FILE="/etc/systemd/system/blutunnel.service"
 TIMER_FILE="/etc/systemd/system/blutunnel.timer"
 BIN_FILE="/usr/local/bin/blutunnel"
+PANEL_BIN_FILE="/usr/local/bin/blutunnel-panel"
 REPO_URL="https://github.com/ArkaXray/blutunnel.git"
 
 usage() {
@@ -17,6 +18,7 @@ Usage:
 This installer sets up BluTunnel interactive mode.
 After install, run:
   sudo blutunnel
+  sudo blutunnel-panel
 EOF
 }
 
@@ -111,6 +113,9 @@ need_cmd bash
 if [[ -f "blutunnel.py" ]]; then
   mkdir -p "$INSTALL_DIR"
   cp -f blutunnel.py "$INSTALL_DIR/blutunnel.py"
+  if [[ -f "blutunnel_panel.py" ]]; then
+    cp -f blutunnel_panel.py "$INSTALL_DIR/blutunnel_panel.py"
+  fi
   mkdir -p "$INSTALL_DIR/systemd"
   cp -f systemd/blutunnel.service "$INSTALL_DIR/systemd/blutunnel.service"
   cp -f systemd/blutunnel.timer "$INSTALL_DIR/systemd/blutunnel.timer"
@@ -128,6 +133,14 @@ cat > "$BIN_FILE" <<'EOF'
 exec /usr/bin/python3 /opt/blutunnel/blutunnel.py "$@"
 EOF
 chmod +x "$BIN_FILE"
+
+if [[ -f "$INSTALL_DIR/blutunnel_panel.py" ]]; then
+  cat > "$PANEL_BIN_FILE" <<'EOF'
+#!/usr/bin/env bash
+exec /usr/bin/python3 /opt/blutunnel/blutunnel_panel.py "$@"
+EOF
+  chmod +x "$PANEL_BIN_FILE"
+fi
 
 mkdir -p "$ENV_DIR"
 if [[ -f "$INSTALL_DIR/blutunnel.env.example" ]]; then
@@ -165,3 +178,6 @@ fi
 echo
 echo "BluTunnel is ready."
 echo "Run interactive mode with: sudo blutunnel"
+if [[ -f "$INSTALL_DIR/blutunnel_panel.py" ]]; then
+  echo "Run web panel with:        sudo blutunnel-panel"
+fi

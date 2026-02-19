@@ -1,43 +1,52 @@
 # BluTunnel
 
-BluTunnel is a reverse tunnel project with an interactive terminal flow.
+BluTunnel is a reverse tunnel project with two simple ways to use it:
+- Terminal menu (`blutunnel`)
+- Web panel (`blutunnel-panel`)
 
 ## Quick Install (Bash)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ArkaXray/blutunnel/main/install.sh | sudo bash
 ```
 
-After install:
+## Simple Usage
+
+### 1) Terminal Menu
 ```bash
 sudo blutunnel
 ```
 
-## Persian Guide | راهنمای فارسی
-این پروژه الان روی حالت تعاملی تنظیم شده است.
+This opens the banner and menu:
+- Europe Server
+- Iran Server
+- Manage Tunnel
+- Delete Tunnel
 
-بعد از اجرای `blutunnel`:
-1. بنر نمایش داده می شود.
-2. گزینه `Europe` یا `Iran` را انتخاب می کنید.
-3. پورت ها و تنظیمات لازم را وارد می کنید.
+### 2) Web Panel (GUI)
+```bash
+sudo blutunnel-panel
+```
 
-یعنی دیگر نیازی به اجرای دستورهای مستقیم `--mode iran` یا `--mode europe` نیست.
+Then open this address in browser:
+```text
+http://127.0.0.1:8090
+```
 
-## Modes
-- `Europe (XRAY CONNECTOR)`
-  - Connects to Iran bridge.
-  - Syncs detected Xray ports.
-- `Iran (FLEX LISTENER)`
-  - Accepts reverse links.
-  - Opens ports from auto-sync or manual list.
+The panel has:
+- Mode selection (Iran / Europe)
+- IP + port fields
+- Start / Stop buttons
+- Runtime status + log preview
 
 ## Optional systemd Mode
-Installer can also configure `systemd` auto-start if you choose `y` during install.
+During install, you can enable systemd auto-start.
 
-- Service file: `systemd/blutunnel.service`
-- Timer file: `systemd/blutunnel.timer`
-- Env sample: `blutunnel.env.example`
+Files:
+- `systemd/blutunnel.service`
+- `systemd/blutunnel.timer`
+- `blutunnel.env.example`
 
-If enabled, service reads config from:
+If enabled, service uses:
 - `/etc/blutunnel/blutunnel.env`
 
 ## Requirements
@@ -50,6 +59,7 @@ If enabled, service reads config from:
 ```text
 .
 |-- blutunnel.py
+|-- blutunnel_panel.py
 |-- install.sh
 |-- blutunnel.env.example
 |-- requirements.txt
