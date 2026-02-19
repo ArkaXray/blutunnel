@@ -161,32 +161,115 @@ def build_args():
     return parser.parse_args()
 
 
-def interactive_config():
-    print("1) Europe Server\n2) Iran Server")
-    choice = input("Choice: ").strip()
-    if choice == "1":
-        return {
-            "mode": "europe",
-            "iran_ip": input("Iran IP: ").strip(),
-            "bridge_port": int(input("Tunnel Bridge Port: ").strip()),
-            "sync_port": int(input("Port Sync Port: ").strip()),
-            "auto_sync": None,
-            "manual_ports": [],
-        }
+def run_shell(cmd):
+    subprocess.run(cmd, shell=True, check=False)
 
+
+def print_panel():
+    print("\n=========== BluTunnel Panel ===========")
+    print("1- IRAN")
+    print("2- Europe")
+    print("3- MangeTunnel")
+    print("4- Delet Tunnel")
+    print("5- Exit Tunnel")
+    print("=======================================\n")
+
+
+def read_iran_config():
+    bridge_port = int(input("Tunnel Bridge Port: ").strip())
+    sync_port = int(input("Port Sync Port: ").strip())
     is_auto = input("Auto-Sync Xray ports? (y/n): ").strip().lower() == "y"
     manual_ports = []
     if not is_auto:
         manual_ports = [p.strip() for p in input("Enter ports manually (80,443,2083): ").split(",")]
-
     return {
         "mode": "iran",
         "iran_ip": None,
-        "bridge_port": int(input("Tunnel Bridge Port: ").strip()),
-        "sync_port": int(input("Port Sync Port: ").strip()),
+        "bridge_port": bridge_port,
+        "sync_port": sync_port,
         "auto_sync": is_auto,
         "manual_ports": manual_ports,
     }
+
+
+def read_europe_config():
+    return {
+        "mode": "europe",
+        "iran_ip": input("Iran IP: ").strip(),
+        "bridge_port": int(input("Tunnel Bridge Port: ").strip()),
+        "sync_port": int(input("Port Sync Port: ").strip()),
+        "auto_sync": None,
+        "manual_ports": [],
+    }
+
+
+def manage_tunnel_menu():
+    if os.name != "posix":
+        print("ManageTunnel is available on Linux/systemd only.")
+        return
+
+    while True:
+        print("\n--- MangeTunnel ---")
+        print("1- Status")
+        print("2- Restart")
+        print("3- Stop")
+        print("4- Start")
+        print("5- Back")
+        choice = input("Choice: ").strip()
+        if choice == "1":
+            run_shell("systemctl status blutunnel.service --no-pager -l")
+            run_shell("systemctl status blutunnel.timer --no-pager -l")
+        elif choice == "2":
+            run_shell("systemctl restart blutunnel.service")
+            print("blutunnel.service restarted.")
+        elif choice == "3":
+            run_shell("systemctl stop blutunnel.service")
+            print("blutunnel.service stopped.")
+        elif choice == "4":
+            run_shell("systemctl start blutunnel.service")
+            print("blutunnel.service started.")
+        elif choice == "5":
+            return
+        else:
+            print("Invalid choice.")
+
+
+def delete_tunnel():
+    if os.name != "posix":
+        print("Delete Tunnel is available on Linux/systemd only.")
+        return
+
+    confirm = input("Type DELETE to remove BluTunnel service and files: ").strip()
+    if confirm != "DELETE":
+        print("Delete cancelled.")
+        return
+
+    run_shell("systemctl stop blutunnel.service 2>/dev/null || true")
+    run_shell("systemctl disable blutunnel.service 2>/dev/null || true")
+    run_shell("systemctl disable blutunnel.timer 2>/dev/null || true")
+    run_shell("rm -f /etc/systemd/system/blutunnel.service /etc/systemd/system/blutunnel.timer")
+    run_shell("rm -rf /etc/blutunnel /opt/blutunnel")
+    run_shell("systemctl daemon-reload")
+    print("BluTunnel removed from this server.")
+
+
+def interactive_config():
+    while True:
+        print_panel()
+        choice = input("Choice: ").strip()
+        if choice == "1":
+            return read_iran_config()
+        if choice == "2":
+            return read_europe_config()
+        if choice == "3":
+            manage_tunnel_menu()
+            continue
+        if choice == "4":
+            delete_tunnel()
+            continue
+        if choice == "5":
+            raise SystemExit("Exit Tunnel")
+        print("Invalid choice.")
 
 
 def args_config(args):

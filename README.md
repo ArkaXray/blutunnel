@@ -7,12 +7,20 @@ FA: یک تونل معکوس پرفورمنس‌بالا برای ارائه س�
 EN: Run one of these on your server.  
 FA: یکی از دستورهای زیر را روی سرور اجرا کنید.
 
-### Iran Server | سرور ایران
+### Fully Interactive (Recommended) | کاملا تعاملی (پیشنهادی)
+```bash
+curl -fsSL https://raw.githubusercontent.com/ArkaXray/blutunnel/main/install.sh | sudo bash
+```
+
+EN: Installer will ask only required values (mode, Iran IP for Europe, and ports).  
+FA: نصاب فقط مقادیر ضروری را می‌پرسد (mode، آی‌پی ایران برای اروپا، و پورت‌ها).
+
+### Direct Iran Command | دستور مستقیم ایران
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ArkaXray/blutunnel/main/install.sh | sudo bash -s -- --mode iran --bridge-port 4430 --sync-port 4431 --auto-sync y
 ```
 
-### Europe Server | سرور اروپا
+### Direct Europe Command | دستور مستقیم اروپا
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ArkaXray/blutunnel/main/install.sh | sudo bash -s -- --mode europe --iran-ip 1.2.3.4 --bridge-port 4430 --sync-port 4431
 ```
