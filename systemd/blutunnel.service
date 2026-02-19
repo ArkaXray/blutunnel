@@ -5,8 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/BluTunnel
-ExecStart=/usr/bin/python3 /root/BluTunnel/blutunnel.py
+WorkingDirectory=/opt/blutunnel
+EnvironmentFile=/etc/blutunnel/blutunnel.env
+ExecStart=/usr/bin/python3 /opt/blutunnel/blutunnel.py --mode ${MODE} --bridge-port ${BRIDGE_PORT} --sync-port ${SYNC_PORT} --iran-ip ${IRAN_IP} --auto-sync ${AUTO_SYNC} --manual-ports ${MANUAL_PORTS}
 Restart=always
 RestartSec=3
 LimitNOFILE=1000000

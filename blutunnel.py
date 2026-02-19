@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-import asyncio, os, socket, struct, resource, subprocess, logging
+import argparse
+import asyncio
+import logging
+import os
+import resource
+import socket
+import struct
+import subprocess
 
 BUFFER_SIZE = 64*1024
 OS_SOCK_BUFFER = 2*1024*1024
@@ -13,6 +20,12 @@ logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s [
 def log(msg):
     print(msg)
     logging.info(msg)
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 def optimize_system():
     try:
@@ -38,10 +51,7 @@ async def fast_pipe(reader, writer):
         writer.close()
         await writer.wait_closed()
 
-async def start_europe():
-    iran_ip = input("Iran IP: ")
-    bridge_p = int(input("Tunnel Bridge Port: "))
-    sync_p = int(input("Port Sync Port: "))
+async def start_europe(iran_ip, bridge_p, sync_p):
 
     def get_xray_ports():
         try:
@@ -90,10 +100,7 @@ async def start_europe():
     log(f"Running Europe Tunnel Sync:{sync_p} Bridge:{bridge_p}")
     await asyncio.Future()
 
-async def start_iran():
-    bridge_p = int(input("Tunnel Bridge Port: "))
-    sync_p = int(input("Port Sync Port: "))
-    is_auto = input("Auto-Sync Xray ports? (y/n): ").lower()=='y'
+async def start_iran(bridge_p, sync_p, is_auto, manual_ports):
     connection_pool=asyncio.Queue()
     active_servers={}
 
@@ -136,16 +143,80 @@ async def start_iran():
         await asyncio.start_server(handle_sync_conn,'0.0.0.0',sync_p,backlog=100)
         log(f"Auto-Sync Active on port {sync_p}")
     else:
-        manual_ports=input("Enter ports manually (80,443,2083): ").split(',')
         for p_str in manual_ports:
-            if p_str.strip().isdigit(): await open_new_port(int(p_str.strip()))
+            if p_str.strip().isdigit():
+                await open_new_port(int(p_str.strip()))
         log("Manual Ports Opened.")
 
     await asyncio.Event().wait()
 
+def build_args():
+    parser = argparse.ArgumentParser(description="BluTunnel reverse tunnel")
+    parser.add_argument("--mode", choices=["europe", "iran"], help="Run mode")
+    parser.add_argument("--iran-ip", help="Iran server IP (required in europe mode)")
+    parser.add_argument("--bridge-port", type=int, help="Tunnel bridge port")
+    parser.add_argument("--sync-port", type=int, help="Port sync port")
+    parser.add_argument("--auto-sync", help="Enable auto sync in iran mode: y/n")
+    parser.add_argument("--manual-ports", default="", help="Comma-separated manual ports for iran mode")
+    return parser.parse_args()
+
+
+def interactive_config():
+    print("1) Europe Server\n2) Iran Server")
+    choice = input("Choice: ").strip()
+    if choice == "1":
+        return {
+            "mode": "europe",
+            "iran_ip": input("Iran IP: ").strip(),
+            "bridge_port": int(input("Tunnel Bridge Port: ").strip()),
+            "sync_port": int(input("Port Sync Port: ").strip()),
+            "auto_sync": None,
+            "manual_ports": [],
+        }
+
+    is_auto = input("Auto-Sync Xray ports? (y/n): ").strip().lower() == "y"
+    manual_ports = []
+    if not is_auto:
+        manual_ports = [p.strip() for p in input("Enter ports manually (80,443,2083): ").split(",")]
+
+    return {
+        "mode": "iran",
+        "iran_ip": None,
+        "bridge_port": int(input("Tunnel Bridge Port: ").strip()),
+        "sync_port": int(input("Port Sync Port: ").strip()),
+        "auto_sync": is_auto,
+        "manual_ports": manual_ports,
+    }
+
+
+def args_config(args):
+    if not args.mode:
+        return None
+    if not args.bridge_port or not args.sync_port:
+        raise ValueError("--bridge-port and --sync-port are required when --mode is set")
+    if args.mode == "europe" and not args.iran_ip:
+        raise ValueError("--iran-ip is required in europe mode")
+    auto_sync = parse_bool(args.auto_sync) if args.auto_sync is not None else True
+    manual_ports = [p.strip() for p in args.manual_ports.split(",") if p.strip()]
+    return {
+        "mode": args.mode,
+        "iran_ip": args.iran_ip,
+        "bridge_port": args.bridge_port,
+        "sync_port": args.sync_port,
+        "auto_sync": auto_sync,
+        "manual_ports": manual_ports,
+    }
+
+
 if __name__=="__main__":
     optimize_system()
-    print("1) Europe Server\n2) Iran Server")
-    choice=input("Choice: ")
-    if choice=='1': asyncio.run(start_europe())
-    else: asyncio.run(start_iran())
+    args = build_args()
+    try:
+        config = args_config(args) or interactive_config()
+    except Exception as e:
+        raise SystemExit(f"Invalid arguments: {e}")
+
+    if config["mode"] == "europe":
+        asyncio.run(start_europe(config["iran_ip"], config["bridge_port"], config["sync_port"]))
+    else:
+        asyncio.run(start_iran(config["bridge_port"], config["sync_port"], config["auto_sync"], config["manual_ports"]))
