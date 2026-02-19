@@ -1,137 +1,167 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODE=""
-IRAN_IP=""
-BRIDGE_PORT=""
-SYNC_PORT=""
-AUTO_SYNC="y"
-MANUAL_PORTS=""
 INSTALL_DIR="/opt/blutunnel"
 ENV_DIR="/etc/blutunnel"
 SERVICE_FILE="/etc/systemd/system/blutunnel.service"
 TIMER_FILE="/etc/systemd/system/blutunnel.timer"
+BIN_FILE="/usr/local/bin/blutunnel"
 REPO_URL="https://github.com/ArkaXray/blutunnel.git"
 
 usage() {
   cat <<'EOF'
 Usage:
   curl -fsSL https://raw.githubusercontent.com/ArkaXray/blutunnel/main/install.sh | sudo bash
-  sudo bash install.sh --mode iran --bridge-port 4430 --sync-port 4431 [--auto-sync y|n] [--manual-ports 80,443]
-  sudo bash install.sh --mode europe --iran-ip 1.2.3.4 --bridge-port 4430 --sync-port 4431
+  sudo bash install.sh
 
-Options:
-  --mode           iran | europe
-  --iran-ip        required for europe mode
-  --bridge-port    required
-  --sync-port      required
-  --auto-sync      y|n (iran mode only, default: y)
-  --manual-ports   comma list (iran + auto-sync=n)
+This installer sets up BluTunnel interactive mode.
+After install, run:
+  sudo blutunnel
 EOF
 }
 
-prompt_if_missing() {
-  if [[ -z "$MODE" ]]; then
-    echo "Select mode:"
-    echo "1) iran"
-    echo "2) europe"
-    read -r -p "Choice [1/2]: " mode_choice
-    if [[ "$mode_choice" == "2" ]]; then
-      MODE="europe"
-    else
-      MODE="iran"
-    fi
-  fi
-
-  if [[ -z "$BRIDGE_PORT" ]]; then
-    read -r -p "Tunnel Bridge Port [4430]: " BRIDGE_PORT
-    BRIDGE_PORT="${BRIDGE_PORT:-4430}"
-  fi
-
-  if [[ -z "$SYNC_PORT" ]]; then
-    read -r -p "Port Sync Port [4431]: " SYNC_PORT
-    SYNC_PORT="${SYNC_PORT:-4431}"
-  fi
-
-  if [[ "$MODE" == "europe" && -z "$IRAN_IP" ]]; then
-    read -r -p "Iran IP: " IRAN_IP
-  fi
-
-  if [[ "$MODE" == "iran" && -z "${AUTO_SYNC:-}" ]]; then
-    read -r -p "Auto-Sync Xray ports? (y/n) [y]: " AUTO_SYNC
-    AUTO_SYNC="${AUTO_SYNC:-y}"
-  fi
-
-  if [[ "$MODE" == "iran" && "${AUTO_SYNC,,}" == "n" && -z "$MANUAL_PORTS" ]]; then
-    read -r -p "Manual ports (comma-separated, e.g. 80,443): " MANUAL_PORTS
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Missing required command: $1"
+    exit 1
   fi
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --mode) MODE="${2:-}"; shift 2 ;;
-    --iran-ip) IRAN_IP="${2:-}"; shift 2 ;;
-    --bridge-port) BRIDGE_PORT="${2:-}"; shift 2 ;;
-    --sync-port) SYNC_PORT="${2:-}"; shift 2 ;;
-    --auto-sync) AUTO_SYNC="${2:-}"; shift 2 ;;
-    --manual-ports) MANUAL_PORTS="${2:-}"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "Unknown option: $1"; usage; exit 1 ;;
-  esac
-done
+ask_port() {
+  local prompt="$1"
+  local default_value="$2"
+  local value
 
-if [[ $EUID -ne 0 ]]; then
-  echo "Please run as root: sudo bash install.sh ..."
-  exit 1
-fi
+  while true; do
+    read -r -p "$prompt [$default_value]: " value
+    value="${value:-$default_value}"
+    if [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 && value <= 65535 )); then
+      echo "$value"
+      return
+    fi
+    echo "Invalid port. Enter a number between 1 and 65535."
+  done
+}
 
-prompt_if_missing
+prompt_env_config() {
+  local mode bridge_port sync_port auto_sync manual_ports iran_ip
 
-if [[ -z "$MODE" || -z "$BRIDGE_PORT" || -z "$SYNC_PORT" ]]; then
-  echo "Missing required values."
+  echo
+  echo "Configure systemd auto-start mode"
+  echo "1) iran"
+  echo "2) europe"
+  read -r -p "Choice [1/2]: " mode
+  if [[ "$mode" == "2" ]]; then
+    mode="europe"
+  else
+    mode="iran"
+  fi
+
+  bridge_port="$(ask_port "Tunnel Bridge Port" "4430")"
+  sync_port="$(ask_port "Port Sync Port" "4431")"
+
+  iran_ip=""
+  auto_sync="y"
+  manual_ports=""
+
+  if [[ "$mode" == "europe" ]]; then
+    read -r -p "Iran IP: " iran_ip
+  else
+    read -r -p "Auto-Sync Xray ports? (y/n) [y]: " auto_sync
+    auto_sync="${auto_sync:-y}"
+    auto_sync="${auto_sync,,}"
+    if [[ "$auto_sync" != "y" && "$auto_sync" != "n" ]]; then
+      auto_sync="y"
+    fi
+    if [[ "$auto_sync" == "n" ]]; then
+      read -r -p "Manual ports (comma-separated, e.g. 80,443,2083): " manual_ports
+    fi
+  fi
+
+  mkdir -p "$ENV_DIR"
+  cat > "$ENV_DIR/blutunnel.env" <<EOF
+MODE=$mode
+IRAN_IP=$iran_ip
+BRIDGE_PORT=$bridge_port
+SYNC_PORT=$sync_port
+AUTO_SYNC=$auto_sync
+MANUAL_PORTS=$manual_ports
+EOF
+
+  echo "Wrote config: $ENV_DIR/blutunnel.env"
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
+  exit 0
+fi
+
+if [[ $# -gt 0 ]]; then
+  echo "This installer is interactive-only. Extra arguments are ignored."
+fi
+
+if [[ "$EUID" -ne 0 ]]; then
+  echo "Please run as root: sudo bash install.sh"
   exit 1
 fi
 
-if [[ "$MODE" == "europe" && -z "$IRAN_IP" ]]; then
-  echo "Iran IP is required for europe mode"
-  exit 1
-fi
+need_cmd python3
+need_cmd bash
 
-if [[ "$MODE" != "iran" && "$MODE" != "europe" ]]; then
-  echo "--mode must be iran or europe"
-  exit 1
-fi
-
-if [[ ! -f "blutunnel.py" ]]; then
-  rm -rf "$INSTALL_DIR"
-  git clone "$REPO_URL" "$INSTALL_DIR"
-else
+if [[ -f "blutunnel.py" ]]; then
   mkdir -p "$INSTALL_DIR"
   cp -f blutunnel.py "$INSTALL_DIR/blutunnel.py"
   mkdir -p "$INSTALL_DIR/systemd"
   cp -f systemd/blutunnel.service "$INSTALL_DIR/systemd/blutunnel.service"
   cp -f systemd/blutunnel.timer "$INSTALL_DIR/systemd/blutunnel.timer"
+  if [[ -f "blutunnel.env.example" ]]; then
+    cp -f blutunnel.env.example "$INSTALL_DIR/blutunnel.env.example"
+  fi
+else
+  need_cmd git
+  rm -rf "$INSTALL_DIR"
+  git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
-mkdir -p "$ENV_DIR"
-cat > "$ENV_DIR/blutunnel.env" <<EOF
-MODE=$MODE
-IRAN_IP=$IRAN_IP
-BRIDGE_PORT=$BRIDGE_PORT
-SYNC_PORT=$SYNC_PORT
-AUTO_SYNC=$AUTO_SYNC
-MANUAL_PORTS=$MANUAL_PORTS
+cat > "$BIN_FILE" <<'EOF'
+#!/usr/bin/env bash
+exec /usr/bin/python3 /opt/blutunnel/blutunnel.py "$@"
 EOF
+chmod +x "$BIN_FILE"
 
-cp -f "$INSTALL_DIR/systemd/blutunnel.service" "$SERVICE_FILE"
-cp -f "$INSTALL_DIR/systemd/blutunnel.timer" "$TIMER_FILE"
+mkdir -p "$ENV_DIR"
+if [[ -f "$INSTALL_DIR/blutunnel.env.example" ]]; then
+  cp -f "$INSTALL_DIR/blutunnel.env.example" "$ENV_DIR/blutunnel.env.example"
+fi
 
-systemctl daemon-reload
-systemctl enable --now blutunnel.service
-systemctl enable --now blutunnel.timer
+echo
+read -r -p "Enable systemd auto-start mode too? (y/N): " enable_service
+enable_service="${enable_service:-n}"
+enable_service="${enable_service,,}"
 
-echo "BluTunnel installed and running."
-echo "Config file: $ENV_DIR/blutunnel.env"
-echo "Service status: systemctl status blutunnel.service"
-echo "Live logs: journalctl -u blutunnel.service -f"
+if [[ "$enable_service" == "y" ]]; then
+  prompt_env_config
+  cp -f "$INSTALL_DIR/systemd/blutunnel.service" "$SERVICE_FILE"
+  cp -f "$INSTALL_DIR/systemd/blutunnel.timer" "$TIMER_FILE"
+  systemctl daemon-reload
+  systemctl enable --now blutunnel.service
+
+  read -r -p "Enable 30-minute restart timer? (y/N): " enable_timer
+  enable_timer="${enable_timer:-n}"
+  enable_timer="${enable_timer,,}"
+  if [[ "$enable_timer" == "y" ]]; then
+    systemctl enable --now blutunnel.timer
+  else
+    systemctl disable --now blutunnel.timer >/dev/null 2>&1 || true
+  fi
+
+  echo "Systemd service installed."
+  echo "Status: systemctl status blutunnel.service"
+  echo "Logs:   journalctl -u blutunnel.service -f"
+else
+  echo "Skipping systemd setup."
+fi
+
+echo
+echo "BluTunnel is ready."
+echo "Run interactive mode with: sudo blutunnel"
