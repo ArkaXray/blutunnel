@@ -75,6 +75,7 @@ DependencyManager.ensure_dependencies()
 import aiohttp
 
 CONFIG_FILE = "blutunnel_config.json"
+LOG_FILE = "blutunnel.log"
 BUFFER_SIZE = 65536
 SOCK_BUFFER = 2 * 1024 * 1024
 MAX_POOL = 300
@@ -124,6 +125,15 @@ logger = logging.getLogger("BluTunnel")
 handler = logging.StreamHandler()
 handler.setFormatter(ColoredFormatter())
 logger.addHandler(handler)
+
+# Persistent logs for troubleshooting and CheckTunnel menu.
+file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+))
+logger.addHandler(file_handler)
+
 logger.setLevel(logging.INFO)
 
 class BeautifulUI:
@@ -574,6 +584,32 @@ def save_config(data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
+def save_tunnel_profile(mode, profile):
+    config = load_config()
+    config[f"last_{mode}"] = {
+        **profile,
+        "updated_at": int(time.time())
+    }
+    save_config(config)
+
+def format_timestamp(ts):
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ts)))
+    except Exception:
+        return "Unknown"
+
+async def tcp_probe(host, port, timeout=3):
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, int(port)),
+            timeout=timeout
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True, "OK"
+    except Exception as e:
+        return False, str(e)
+
 def optimize():
     try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (200000, 200000))
@@ -650,6 +686,11 @@ async def start_europe(key):
         BeautifulUI.print_error("Port must be a number")
         input(f"{Colors.GRAY}Press Enter...{Colors.END}")
         return
+    save_tunnel_profile("europe", {
+        "iran_ip": iran_ip,
+        "bridge_port": bridge_p,
+        "sync_port": sync_p
+    })
     auth = hash_key(key)
     running = True
     start_time = time.time()
@@ -800,6 +841,11 @@ async def start_iran(key):
         BeautifulUI.print_error("Port must be a number")
         input(f"{Colors.GRAY}Press Enter...{Colors.END}")
         return
+    save_tunnel_profile("iran", {
+        "bind_ip": "0.0.0.0",
+        "bridge_port": bridge_p,
+        "sync_port": sync_p
+    })
     auth = hash_key(key)
     pool = asyncio.Queue(maxsize=MAX_POOL)
     active_ports = {}
@@ -988,6 +1034,152 @@ def handle_show_key(config):
     print()
     input(f"{Colors.GRAY}Press Enter...{Colors.END}")
 
+async def check_tunnel(config):
+    BeautifulUI.print_banner()
+    BeautifulUI.print_section("CheckTunnel", "T")
+
+    last_europe = config.get("last_europe")
+    last_iran = config.get("last_iran")
+
+    if not last_europe and not last_iran:
+        BeautifulUI.print_warning("No tunnel profile saved yet.")
+        BeautifulUI.print_info("Tip", "Run Europe/Iran mode once to save profile", "i")
+        print()
+        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+        return
+
+    if last_europe:
+        print(f"{Colors.BOLD}Europe Profile{Colors.END}")
+        iran_ip = last_europe.get("iran_ip", "N/A")
+        bridge_port = last_europe.get("bridge_port", "N/A")
+        sync_port = last_europe.get("sync_port", "N/A")
+        updated = format_timestamp(last_europe.get("updated_at"))
+        BeautifulUI.print_info("Iran IP", iran_ip, ">")
+        BeautifulUI.print_info("Bridge Port", bridge_port, ">")
+        BeautifulUI.print_info("Sync Port", sync_port, ">")
+        BeautifulUI.print_info("Updated", updated, ">")
+
+        if iran_ip != "N/A" and bridge_port != "N/A":
+            ok, msg = await tcp_probe(iran_ip, bridge_port)
+            if ok:
+                BeautifulUI.print_success(f"Bridge reachable: {iran_ip}:{bridge_port}")
+            else:
+                BeautifulUI.print_warning(f"Bridge unreachable: {iran_ip}:{bridge_port} ({msg})")
+        if iran_ip != "N/A" and sync_port != "N/A":
+            ok, msg = await tcp_probe(iran_ip, sync_port)
+            if ok:
+                BeautifulUI.print_success(f"Sync reachable: {iran_ip}:{sync_port}")
+            else:
+                BeautifulUI.print_warning(f"Sync unreachable: {iran_ip}:{sync_port} ({msg})")
+        print()
+
+    if last_iran:
+        print(f"{Colors.BOLD}Iran Profile{Colors.END}")
+        bind_ip = last_iran.get("bind_ip", "0.0.0.0")
+        bridge_port = last_iran.get("bridge_port", "N/A")
+        sync_port = last_iran.get("sync_port", "N/A")
+        updated = format_timestamp(last_iran.get("updated_at"))
+        BeautifulUI.print_info("Bind IP", bind_ip, ">")
+        BeautifulUI.print_info("Bridge Port", bridge_port, ">")
+        BeautifulUI.print_info("Sync Port", sync_port, ">")
+        BeautifulUI.print_info("Updated", updated, ">")
+        print()
+
+    xray_ports = await get_xray_ports_safe()
+    if xray_ports:
+        preview = ", ".join(str(p) for p in sorted(list(xray_ports))[:10])
+        if len(xray_ports) > 10:
+            preview += ", ..."
+        BeautifulUI.print_success(f"Detected local xray ports: {len(xray_ports)}")
+        BeautifulUI.print_info("Ports", preview, ">")
+    else:
+        BeautifulUI.print_warning("No local xray port detected")
+
+    BeautifulUI.print_info("Log File", os.path.abspath(LOG_FILE), ">")
+    print()
+    input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+
+
+def handle_show_logs():
+    BeautifulUI.print_banner()
+    BeautifulUI.print_section("Tunnel Logs", "L")
+
+    lines_text = BeautifulUI.input_with_style("How many lines", "L", "80")
+    try:
+        line_count = max(1, min(1000, int(lines_text)))
+    except ValueError:
+        line_count = 80
+
+    if not os.path.exists(LOG_FILE):
+        BeautifulUI.print_warning("Log file not found yet.")
+        print()
+        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+        return
+
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            log_lines = f.readlines()
+    except Exception as e:
+        BeautifulUI.print_error(f"Cannot read log file: {e}")
+        print()
+        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+        return
+
+    tail = log_lines[-line_count:]
+    BeautifulUI.print_info("Path", os.path.abspath(LOG_FILE), ">")
+    BeautifulUI.print_info("Showing", f"{len(tail)} lines", ">")
+    print()
+    for line in tail:
+        print(line.rstrip("\n"))
+
+    print()
+    input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+
+
+def handle_delete_tunnel(config):
+    BeautifulUI.print_banner()
+    BeautifulUI.print_section("DeleteTunnel", "D")
+
+    keys_to_remove = ["last_europe", "last_iran"]
+    existing = [k for k in keys_to_remove if k in config]
+    if not existing:
+        BeautifulUI.print_warning("No saved tunnel profiles found.")
+        print()
+        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+        return
+
+    BeautifulUI.print_warning("This will delete saved tunnel profiles from config.")
+    for item in existing:
+        BeautifulUI.print_info("Will remove", item, ">")
+    print()
+
+    confirm = BeautifulUI.input_with_style("Type DELETE to confirm", "D")
+    if confirm != "DELETE":
+        BeautifulUI.print_warning("Cancelled.")
+        print()
+        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+        return
+
+    for item in keys_to_remove:
+        config.pop(item, None)
+    save_config(config)
+    BeautifulUI.print_success("Tunnel profiles deleted.")
+
+    clear_logs = BeautifulUI.input_with_style("Delete log file too? (y/N)", "L", "n").lower()
+    if clear_logs == "y":
+        if os.path.exists(LOG_FILE):
+            try:
+                os.remove(LOG_FILE)
+                BeautifulUI.print_success("Log file deleted.")
+            except Exception as e:
+                BeautifulUI.print_error(f"Could not delete log file: {e}")
+        else:
+            BeautifulUI.print_warning("Log file not found.")
+
+    print()
+    input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+
+
 def main():
     try:
         optimize()
@@ -1029,6 +1221,76 @@ def main():
                 input(f"{Colors.GRAY}Press Enter...{Colors.END}")
     except Exception as e:
         print(f"\033[91m❌ Fatal error: {e}\033[0m")
+        sys.exit(1)
+
+def _show_menu_override():
+    BeautifulUI.print_banner()
+    BeautifulUI.print_section("Main Menu", "M")
+    menu_items = [
+        ("1", "Create / Change KEY", "K"),
+        ("2", "Show Current KEY", "S"),
+        ("3", "Run as Europe", "E"),
+        ("4", "Run as Iran", "I"),
+        ("5", "Server Check", "C"),
+        ("6", "CheckTunnel", "T"),
+        ("7", "Show Logs", "L"),
+        ("8", "DeleteTunnel", "D"),
+        ("9", "Exit", "X")
+    ]
+    for num, desc, emoji in menu_items:
+        print(f"  {Colors.GREEN}[{num}]{Colors.END} {emoji} {desc}")
+    print()
+    return BeautifulUI.input_with_style("Select Option", "M")
+
+BeautifulUI.show_menu = staticmethod(_show_menu_override)
+
+def main():
+    try:
+        optimize()
+        while True:
+            try:
+                choice = BeautifulUI.show_menu()
+                config = load_config()
+                if choice == "1":
+                    handle_key_management(config)
+                elif choice == "2":
+                    handle_show_key(config)
+                elif choice == "3":
+                    if "key" not in config:
+                        BeautifulUI.print_error("Create KEY first")
+                        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+                        continue
+                    asyncio.run(start_europe(config["key"]))
+                elif choice == "4":
+                    if "key" not in config:
+                        BeautifulUI.print_error("Create KEY first")
+                        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+                        continue
+                    asyncio.run(start_iran(config["key"]))
+                elif choice == "5":
+                    asyncio.run(server_check())
+                elif choice == "6":
+                    asyncio.run(check_tunnel(config))
+                elif choice == "7":
+                    handle_show_logs()
+                elif choice == "8":
+                    handle_delete_tunnel(config)
+                elif choice == "9":
+                    BeautifulUI.print_banner()
+                    BeautifulUI.print_success("Goodbye!")
+                    sys.exit(0)
+                else:
+                    BeautifulUI.print_error("Invalid Option")
+                    input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+            except KeyboardInterrupt:
+                print("\n")
+                BeautifulUI.print_success("Goodbye!")
+                sys.exit(0)
+            except Exception as e:
+                logger.error(f"Unexpected error: {e}")
+                input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+    except Exception as e:
+        print(f"\033[91mFatal error: {e}\033[0m")
         sys.exit(1)
 
 if __name__ == "__main__":
