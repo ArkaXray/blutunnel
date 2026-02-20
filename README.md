@@ -41,7 +41,15 @@ The project is an interactive TUI script written in Python (`blutunnel.py`).
 
 ## Installation
 
-### Quick install
+### Quick install (one command)
+
+Run directly from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ArkaXray/blutunnel/main/install.sh | bash
+```
+
+### Local install script
 
 ```bash
 chmod +x install.sh
@@ -50,10 +58,16 @@ chmod +x install.sh
 
 `install.sh` does:
 
-- `apt update`
-- install `python3` and `python3-pip`
+- install required packages (`git`, `python3`, `python3-pip`, `iproute2`)
 - install `aiohttp`
+- clone/update repository to `~/blutunnel` (default)
 - run `python3 blutunnel.py`
+
+Optional environment variables:
+
+- `BLUTUNNEL_REPO` (default: `https://github.com/ArkaXray/blutunnel.git`)
+- `BLUTUNNEL_BRANCH` (default: `main`)
+- `BLUTUNNEL_DIR` (default: `~/blutunnel`)
 
 ### Manual install
 

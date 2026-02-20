@@ -1,7 +1,35 @@
-#!/bin/bash
-echo "🔵 Installing BluTunnel..."
-apt update > /dev/null 2>&1
-apt install python3 python3-pip -y > /dev/null 2>&1
-pip3 install aiohttp > /dev/null 2>&1
-echo "✅ Installation complete!"
-python3 blutunnel.py
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_URL="${BLUTUNNEL_REPO:-https://github.com/ArkaXray/blutunnel.git}"
+BRANCH="${BLUTUNNEL_BRANCH:-main}"
+INSTALL_DIR="${BLUTUNNEL_DIR:-$HOME/blutunnel}"
+
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
+
+echo "[BluTunnel] Installing dependencies..."
+$SUDO apt-get update -y >/dev/null
+$SUDO apt-get install -y git python3 python3-pip iproute2 >/dev/null
+
+echo "[BluTunnel] Installing Python dependency: aiohttp..."
+python3 -m pip install --upgrade pip >/dev/null
+python3 -m pip install aiohttp >/dev/null
+
+if [ -d "$INSTALL_DIR/.git" ]; then
+  echo "[BluTunnel] Existing install found at $INSTALL_DIR, updating..."
+  git -C "$INSTALL_DIR" fetch origin "$BRANCH" >/dev/null
+  git -C "$INSTALL_DIR" checkout "$BRANCH" >/dev/null
+  git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" >/dev/null
+else
+  echo "[BluTunnel] Cloning repository into $INSTALL_DIR..."
+  rm -rf "$INSTALL_DIR"
+  git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR" >/dev/null
+fi
+
+echo "[BluTunnel] Starting BluTunnel..."
+cd "$INSTALL_DIR"
+exec python3 blutunnel.py
