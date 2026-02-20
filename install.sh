@@ -39,4 +39,14 @@ fi
 
 echo "[BluTunnel] Starting BluTunnel..."
 cd "$INSTALL_DIR"
-exec python3 blutunnel.py
+
+if [ -t 0 ] && [ -t 1 ]; then
+  exec python3 blutunnel.py
+elif [ -e /dev/tty ]; then
+  echo "[BluTunnel] Re-attaching to /dev/tty for interactive menu..."
+  exec python3 blutunnel.py </dev/tty >/dev/tty 2>&1
+else
+  echo "[BluTunnel] No interactive TTY found."
+  echo "[BluTunnel] Run manually: cd \"$INSTALL_DIR\" && python3 blutunnel.py"
+  exit 1
+fi
