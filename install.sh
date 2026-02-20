@@ -16,14 +16,21 @@ $SUDO apt-get update -y >/dev/null
 $SUDO apt-get install -y git python3 python3-pip iproute2 >/dev/null
 
 echo "[BluTunnel] Installing Python dependency: aiohttp..."
+export PIP_ROOT_USER_ACTION=ignore
 python3 -m pip install --upgrade pip >/dev/null
 python3 -m pip install aiohttp >/dev/null
 
 if [ -d "$INSTALL_DIR/.git" ]; then
   echo "[BluTunnel] Existing install found at $INSTALL_DIR, updating..."
-  git -C "$INSTALL_DIR" fetch origin "$BRANCH" >/dev/null
-  git -C "$INSTALL_DIR" checkout "$BRANCH" >/dev/null
-  git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" >/dev/null
+  if git -C "$INSTALL_DIR" fetch origin "$BRANCH" >/dev/null 2>&1 \
+    && git -C "$INSTALL_DIR" checkout "$BRANCH" >/dev/null 2>&1 \
+    && git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" >/dev/null 2>&1; then
+    :
+  else
+    echo "[BluTunnel] Update conflict detected. Reinstalling clean copy..."
+    rm -rf "$INSTALL_DIR"
+    git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR" >/dev/null
+  fi
 else
   echo "[BluTunnel] Cloning repository into $INSTALL_DIR..."
   rm -rf "$INSTALL_DIR"

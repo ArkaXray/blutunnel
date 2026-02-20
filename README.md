@@ -61,6 +61,7 @@ chmod +x install.sh
 - install required packages (`git`, `python3`, `python3-pip`, `iproute2`)
 - install `aiohttp`
 - clone/update repository to `~/blutunnel` (default)
+- if update has local-change conflict, installer does a clean re-clone automatically
 - run `python3 blutunnel.py`
 
 Optional environment variables:
