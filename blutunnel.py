@@ -80,6 +80,7 @@ BUFFER_SIZE = 65536
 SOCK_BUFFER = 2 * 1024 * 1024
 MAX_POOL = 300
 CONN_TIMEOUT = 30
+PIPE_IDLE_TIMEOUT = 300
 CHECK_HOST_API = "https://check-host.net"
 LOG_THROTTLE_SEC = 30
 
@@ -627,7 +628,7 @@ async def tune(writer):
         except Exception as e:
             logger.debug(f"Tune failed: {e}")
 
-async def pipe(reader, writer, timeout=CONN_TIMEOUT):
+async def pipe(reader, writer, timeout=PIPE_IDLE_TIMEOUT):
     try:
         while True:
             data = await asyncio.wait_for(reader.read(BUFFER_SIZE), timeout=timeout)
@@ -755,10 +756,9 @@ async def start_europe(key):
                     if server_auth != auth:
                         writer.close()
                         return
-                    header = await asyncio.wait_for(
-                        reader.readexactly(2),
-                        timeout=CONN_TIMEOUT
-                    )
+                    # Keep bridge connection alive while waiting for an assigned port.
+                    # Timing out here creates stale queued bridges on Iran side.
+                    header = await reader.readexactly(2)
                     port = struct.unpack("!H", header)[0]
                     if not validate_port(port):
                         logger.warning(f"Invalid port from server: {port}")
@@ -900,8 +900,27 @@ async def start_iran(key):
             logger.error(f"Bridge error: {e}")
             writer.close()
     async def handle_user(reader, writer, port):
-        try:
-            e_reader, e_writer = await asyncio.wait_for(pool.get(), timeout=5)
+        deadline = time.time() + 5
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                logger.debug(f"No healthy bridge available for port {port}")
+                writer.close()
+                return
+            try:
+                e_reader, e_writer = await asyncio.wait_for(pool.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                logger.debug(f"No available bridge for port {port}")
+                writer.close()
+                return
+
+            if e_writer.is_closing() or e_reader.at_eof():
+                try:
+                    e_writer.close()
+                except Exception:
+                    pass
+                continue
+
             try:
                 e_writer.write(struct.pack("!H", port))
                 await e_writer.drain()
@@ -910,15 +929,12 @@ async def start_iran(key):
                     pipe(e_reader, writer),
                     return_exceptions=True
                 )
-            finally:
+                return
+            except Exception as e:
+                logger.debug(f"Stale bridge skipped for port {port}: {e}")
                 if not e_writer.is_closing():
                     e_writer.close()
-        except asyncio.TimeoutError:
-            logger.debug(f"No available bridge for port {port}")
-            writer.close()
-        except Exception as e:
-            logger.error(f"User handler error: {e}")
-            writer.close()
+                continue
     async def open_port(p):
         if p in active_ports:
             return
