@@ -81,6 +81,7 @@ SOCK_BUFFER = 2 * 1024 * 1024
 MAX_POOL = 300
 CONN_TIMEOUT = 30
 CHECK_HOST_API = "https://check-host.net"
+LOG_THROTTLE_SEC = 30
 
 class Colors:
     HEADER = '\033[95m'
@@ -697,6 +698,8 @@ async def start_europe(key):
     connection_count = 0
     last_sync_error_log = 0.0
     last_bridge_error_log = 0.0
+    last_bridge_close_log = 0.0
+    bridge_close_suppressed = 0
 
     async def preflight_port(ip, port, name):
         try:
@@ -725,14 +728,17 @@ async def start_europe(key):
                 writer.close()
                 await writer.wait_closed()
                 logger.info(f"{Colors.GREEN}✓{Colors.END} Synced {len(ports)} ports")
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 now = time.time()
-                if now - last_sync_error_log >= 10:
+                if now - last_sync_error_log >= LOG_THROTTLE_SEC:
                     logger.error(f"Sync failed: {e}")
                     last_sync_error_log = now
             await asyncio.sleep(5)
     async def reverse_worker(semaphore, worker_id):
         nonlocal running, connection_count, last_bridge_error_log
+        nonlocal last_bridge_close_log, bridge_close_suppressed
         backoff = 1
         while running:
             try:
@@ -771,6 +777,21 @@ async def start_europe(key):
                         return_exceptions=True
                     )
                     backoff = 1
+            except asyncio.CancelledError:
+                break
+            except asyncio.IncompleteReadError as e:
+                # Normal when bridge closes before assigning a port (queue full/restart).
+                bridge_close_suppressed += 1
+                now = time.time()
+                if now - last_bridge_close_log >= LOG_THROTTLE_SEC:
+                    logger.debug(
+                        f"Bridge closed before port assignment "
+                        f"(suppressed={bridge_close_suppressed}, received={e.partial and len(e.partial) or 0}/{e.expected})"
+                    )
+                    last_bridge_close_log = now
+                    bridge_close_suppressed = 0
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 10)
             except asyncio.TimeoutError:
                 logger.debug(f"Worker {worker_id} timeout")
                 await asyncio.sleep(backoff)
@@ -779,7 +800,7 @@ async def start_europe(key):
                 err_no = getattr(e, "errno", None)
                 if err_no in (111, 61, 10061):
                     now = time.time()
-                    if now - last_bridge_error_log >= 10:
+                    if now - last_bridge_error_log >= LOG_THROTTLE_SEC:
                         logger.warning(f"Bridge unreachable {iran_ip}:{bridge_p} ({e})")
                         last_bridge_error_log = now
                 else:
@@ -852,8 +873,10 @@ async def start_iran(key):
     running = True
     connection_count = 0
     start_time = time.time()
+    last_bridge_queue_log = 0.0
+    bridge_queue_suppressed = 0
     async def handle_bridge(reader, writer):
-        nonlocal connection_count
+        nonlocal connection_count, last_bridge_queue_log, bridge_queue_suppressed
         await tune(writer)
         try:
             writer.write(auth)
@@ -861,8 +884,18 @@ async def start_iran(key):
             await asyncio.wait_for(pool.put((reader, writer)), timeout=5)
             connection_count += 1
         except asyncio.TimeoutError:
-            logger.warning("Bridge queue full")
+            bridge_queue_suppressed += 1
+            now = time.time()
+            if now - last_bridge_queue_log >= LOG_THROTTLE_SEC:
+                logger.debug(
+                    f"Bridge queue full (pool={pool.qsize()}/{pool.maxsize}, dropped={bridge_queue_suppressed})"
+                )
+                last_bridge_queue_log = now
+                bridge_queue_suppressed = 0
             writer.close()
+        except asyncio.CancelledError:
+            writer.close()
+            raise
         except Exception as e:
             logger.error(f"Bridge error: {e}")
             writer.close()
