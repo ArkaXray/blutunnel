@@ -81,6 +81,9 @@ SOCK_BUFFER = 2 * 1024 * 1024
 MAX_POOL = 300
 CONN_TIMEOUT = 30
 PIPE_IDLE_TIMEOUT = 300
+BRIDGE_ASSIGN_TIMEOUT = 180
+BRIDGE_PICK_TIMEOUT = 12
+BRIDGE_SEND_TIMEOUT = 2
 CHECK_HOST_API = "https://check-host.net"
 LOG_THROTTLE_SEC = 30
 
@@ -756,9 +759,12 @@ async def start_europe(key):
                     if server_auth != auth:
                         writer.close()
                         return
-                    # Keep bridge connection alive while waiting for an assigned port.
-                    # Timing out here creates stale queued bridges on Iran side.
-                    header = await reader.readexactly(2)
+                    # Long timeout to avoid idle disconnect churn, but still recycle
+                    # dead/blackholed connections eventually.
+                    header = await asyncio.wait_for(
+                        reader.readexactly(2),
+                        timeout=BRIDGE_ASSIGN_TIMEOUT
+                    )
                     port = struct.unpack("!H", header)[0]
                     if not validate_port(port):
                         logger.warning(f"Invalid port from server: {port}")
@@ -900,7 +906,7 @@ async def start_iran(key):
             logger.error(f"Bridge error: {e}")
             writer.close()
     async def handle_user(reader, writer, port):
-        deadline = time.time() + 5
+        deadline = time.time() + BRIDGE_PICK_TIMEOUT
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
@@ -923,13 +929,18 @@ async def start_iran(key):
 
             try:
                 e_writer.write(struct.pack("!H", port))
-                await e_writer.drain()
+                await asyncio.wait_for(e_writer.drain(), timeout=BRIDGE_SEND_TIMEOUT)
                 await asyncio.gather(
                     pipe(reader, e_writer),
                     pipe(e_reader, writer),
                     return_exceptions=True
                 )
                 return
+            except asyncio.TimeoutError:
+                logger.debug(f"Stale bridge send timeout for port {port}")
+                if not e_writer.is_closing():
+                    e_writer.close()
+                continue
             except Exception as e:
                 logger.debug(f"Stale bridge skipped for port {port}: {e}")
                 if not e_writer.is_closing():
