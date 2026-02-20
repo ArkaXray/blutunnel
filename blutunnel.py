@@ -674,15 +674,15 @@ async def get_xray_ports_safe():
 
 async def start_europe(key):
     BeautifulUI.print_banner()
-    BeautifulUI.print_section("Europe Mode", "🇪🇺")
-    iran_ip = BeautifulUI.input_with_style("Iran IP", "🌍")
+    BeautifulUI.print_section("Europe Mode", "E")
+    iran_ip = BeautifulUI.input_with_style("Iran IP", "I")
     if not validate_ip(iran_ip):
         BeautifulUI.print_error("Invalid IP address")
         input(f"{Colors.GRAY}Press Enter...{Colors.END}")
         return
     try:
-        bridge_p = int(BeautifulUI.input_with_style("Bridge Port", "🔌"))
-        sync_p = int(BeautifulUI.input_with_style("Sync Port", "🔄"))
+        bridge_p = int(BeautifulUI.input_with_style("Tunnel Bridge Port", "B"))
+        sync_p = int(BeautifulUI.input_with_style("Port Sync Port", "S"))
         if not (validate_port(bridge_p) and validate_port(sync_p)):
             BeautifulUI.print_error("Invalid port number")
             input(f"{Colors.GRAY}Press Enter...{Colors.END}")
@@ -694,151 +694,106 @@ async def start_europe(key):
     save_tunnel_profile("europe", {
         "iran_ip": iran_ip,
         "bridge_port": bridge_p,
-        "sync_port": sync_p
+        "sync_port": sync_p,
     })
-    auth = hash_key(key)
     running = True
     start_time = time.time()
     connection_count = 0
     last_sync_error_log = 0.0
-    last_bridge_error_log = 0.0
-    last_bridge_close_log = 0.0
-    bridge_close_suppressed = 0
-
-    async def preflight_port(ip, port, name):
+    def get_xray_ports():
+        ports = set()
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(ip, port),
-                timeout=3
-            )
-            writer.close()
-            await writer.wait_closed()
-            BeautifulUI.print_success(f"{name} reachable: {ip}:{port}")
-            return True
-        except Exception as e:
-            BeautifulUI.print_error(f"{name} unreachable: {ip}:{port} ({e})")
-            return False
-    async def sync_task():
-        nonlocal running, last_sync_error_log
+            import re
+            output = subprocess.check_output("ss -tlnp", shell=True, stderr=subprocess.DEVNULL).decode(errors="ignore")
+            for line in output.splitlines():
+                if "xray" not in line.lower():
+                    continue
+                if "127.0.0.1" in line or "::1" in line:
+                    continue
+                found = re.findall(r"[:\]](\d+)\b", line)
+                for p in found:
+                    p_num = int(p)
+                    if 100 < p_num <= 65535 and p_num not in (bridge_p, sync_p):
+                        ports.add(p_num)
+        except Exception:
+            return set()
+        return ports
+    async def port_sync_task():
+        nonlocal last_sync_error_log
         while running:
             try:
-                reader, writer = await asyncio.open_connection(iran_ip, sync_p)
-                writer.write(auth)
-                ports = await get_xray_ports_safe()
-                writer.write(struct.pack("!H", len(ports)))
-                for p in ports:
-                    writer.write(struct.pack("!H", p))
+                _, writer = await asyncio.open_connection(iran_ip, sync_p)
+                current_ports = sorted(get_xray_ports())[:255]
+                payload = struct.pack("!B", len(current_ports))
+                for p in current_ports:
+                    payload += struct.pack("!H", p)
+                writer.write(payload)
                 await writer.drain()
                 writer.close()
                 await writer.wait_closed()
-                logger.info(f"{Colors.GREEN}✓{Colors.END} Synced {len(ports)} ports")
+                logger.info(f"Synced {len(current_ports)} ports")
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 now = time.time()
                 if now - last_sync_error_log >= LOG_THROTTLE_SEC:
-                    logger.error(f"Sync failed: {e}")
+                    logger.warning(f"Sync failed: {e}")
                     last_sync_error_log = now
-            await asyncio.sleep(5)
-    async def reverse_worker(semaphore, worker_id):
-        nonlocal running, connection_count, last_bridge_error_log
-        nonlocal last_bridge_close_log, bridge_close_suppressed
+            await asyncio.sleep(3)
+    async def create_reverse_link(worker_id):
+        nonlocal connection_count
         backoff = 1
         while running:
             try:
-                async with semaphore:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection(iran_ip, bridge_p),
-                        timeout=CONN_TIMEOUT
-                    )
-                    await tune(writer)
-                    server_auth = await asyncio.wait_for(
-                        reader.readexactly(32),
-                        timeout=CONN_TIMEOUT
-                    )
-                    if server_auth != auth:
-                        writer.close()
-                        return
-                    # Long timeout to avoid idle disconnect churn, but still recycle
-                    # dead/blackholed connections eventually.
-                    header = await asyncio.wait_for(
-                        reader.readexactly(2),
-                        timeout=BRIDGE_ASSIGN_TIMEOUT
-                    )
-                    port = struct.unpack("!H", header)[0]
-                    if not validate_port(port):
-                        logger.warning(f"Invalid port from server: {port}")
-                        writer.close()
-                        continue
-                    r_reader, r_writer = await asyncio.wait_for(
-                        asyncio.open_connection("127.0.0.1", port),
-                        timeout=CONN_TIMEOUT
-                    )
-                    await tune(r_writer)
-                    connection_count += 1
-                    logger.debug(f"Worker {worker_id} connected to port {port}")
-                    await asyncio.gather(
-                        pipe(reader, r_writer),
-                        pipe(r_reader, writer),
-                        return_exceptions=True
-                    )
-                    backoff = 1
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(iran_ip, bridge_p),
+                    timeout=CONN_TIMEOUT,
+                )
+                await tune(writer)
+                header = await asyncio.wait_for(
+                    reader.readexactly(2),
+                    timeout=BRIDGE_ASSIGN_TIMEOUT,
+                )
+                target_port = struct.unpack("!H", header)[0]
+                if not validate_port(target_port):
+                    writer.close()
+                    continue
+                remote_reader, remote_writer = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", target_port),
+                    timeout=CONN_TIMEOUT,
+                )
+                await tune(remote_writer)
+                connection_count += 1
+                await asyncio.gather(
+                    pipe(reader, remote_writer),
+                    pipe(remote_reader, writer),
+                    return_exceptions=True,
+                )
+                backoff = 1
             except asyncio.CancelledError:
                 break
-            except asyncio.IncompleteReadError as e:
-                # Normal when bridge closes before assigning a port (queue full/restart).
-                bridge_close_suppressed += 1
-                now = time.time()
-                if now - last_bridge_close_log >= LOG_THROTTLE_SEC:
-                    logger.debug(
-                        f"Bridge closed before port assignment "
-                        f"(suppressed={bridge_close_suppressed}, received={e.partial and len(e.partial) or 0}/{e.expected})"
-                    )
-                    last_bridge_close_log = now
-                    bridge_close_suppressed = 0
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 10)
-            except asyncio.TimeoutError:
-                logger.debug(f"Worker {worker_id} timeout")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 10)
             except Exception as e:
-                err_no = getattr(e, "errno", None)
-                if err_no in (111, 61, 10061):
-                    now = time.time()
-                    if now - last_bridge_error_log >= LOG_THROTTLE_SEC:
-                        logger.warning(f"Bridge unreachable {iran_ip}:{bridge_p} ({e})")
-                        last_bridge_error_log = now
-                else:
-                    logger.error(f"Worker {worker_id} error: {e}")
+                logger.debug(f"Worker {worker_id} reconnect: {e}")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 10)
-    semaphore = asyncio.Semaphore(MAX_POOL)
     print()
-    BeautifulUI.print_info("Preflight", "Checking Bridge/Sync connectivity", "i")
-    bridge_ok = await preflight_port(iran_ip, bridge_p, "Bridge port")
-    sync_ok = await preflight_port(iran_ip, sync_p, "Sync port")
-    if not (bridge_ok and sync_ok):
-        BeautifulUI.print_warning("Start Iran mode first and open firewall for Bridge/Sync ports.")
-        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
-        return
-    print()
-    BeautifulUI.print_success("🚀 BluTunnel Europe Starting...")
+    BeautifulUI.print_success("BluTunnel Europe Starting")
     print(f"  {Colors.SERVER} Target: {Colors.CYAN}{iran_ip}:{bridge_p}{Colors.END}")
     print(f"  {Colors.INFO} Workers: {Colors.YELLOW}{MAX_POOL}{Colors.END}")
     print()
-    sync_task_obj = asyncio.create_task(sync_task())
-    workers = []
-    for i in range(MAX_POOL):
-        task = asyncio.create_task(reverse_worker(semaphore, i))
-        workers.append(task)
+    sync_task_obj = asyncio.create_task(port_sync_task())
+    workers = [asyncio.create_task(create_reverse_link(i)) for i in range(MAX_POOL)]
     async def show_stats():
         while running:
             uptime = time.time() - start_time
             hours = int(uptime // 3600)
             minutes = int((uptime % 3600) // 60)
             seconds = int(uptime % 60)
-            print(f"\r  {Colors.CYAN}⏱️ Uptime: {Colors.GREEN}{hours:02d}:{minutes:02d}:{seconds:02d}{Colors.END} {Colors.PING} Connections: {Colors.YELLOW}{connection_count}{Colors.END}", end="")
+            print(
+                f"\r  {Colors.CYAN}Uptime: {Colors.GREEN}{hours:02d}:{minutes:02d}:{seconds:02d}{Colors.END} "
+                f"{Colors.PING} Connections: {Colors.YELLOW}{connection_count}{Colors.END}",
+                end="",
+            )
             await asyncio.sleep(1)
     stats_task = asyncio.create_task(show_stats())
     try:
@@ -852,14 +807,13 @@ async def start_europe(key):
         for w in workers:
             w.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
-        BeautifulUI.print_success("✅ Shutdown complete")
-
+        BeautifulUI.print_success("Shutdown complete")
 async def start_iran(key):
     BeautifulUI.print_banner()
-    BeautifulUI.print_section("Iran Mode", "🇮🇷")
+    BeautifulUI.print_section("Iran Mode", "I")
     try:
-        bridge_p = int(BeautifulUI.input_with_style("Bridge Port", "🌉"))
-        sync_p = int(BeautifulUI.input_with_style("Sync Port", "🔄"))
+        bridge_p = int(BeautifulUI.input_with_style("Tunnel Bridge Port", "B"))
+        sync_p = int(BeautifulUI.input_with_style("Port Sync Port", "S"))
         if not (validate_port(bridge_p) and validate_port(sync_p)):
             BeautifulUI.print_error("Invalid port number")
             input(f"{Colors.GRAY}Press Enter...{Colors.END}")
@@ -868,185 +822,179 @@ async def start_iran(key):
         BeautifulUI.print_error("Port must be a number")
         input(f"{Colors.GRAY}Press Enter...{Colors.END}")
         return
+    auto_mode = BeautifulUI.input_with_style("Auto-Sync Xray ports? (y/n)", "A", "y").strip().lower() == "y"
     save_tunnel_profile("iran", {
         "bind_ip": "0.0.0.0",
         "bridge_port": bridge_p,
-        "sync_port": sync_p
+        "sync_port": sync_p,
+        "auto_mode": auto_mode,
     })
-    auth = hash_key(key)
-    pool = asyncio.Queue(maxsize=MAX_POOL)
-    active_ports = {}
+    connection_pool = asyncio.Queue(maxsize=MAX_POOL * 2)
+    active_servers = {}
     running = True
     connection_count = 0
     start_time = time.time()
-    last_bridge_queue_log = 0.0
-    bridge_queue_suppressed = 0
-    async def handle_bridge(reader, writer):
-        nonlocal connection_count, last_bridge_queue_log, bridge_queue_suppressed
+    last_queue_log = 0.0
+    dropped_bridge = 0
+    async def handle_europe_bridge(reader, writer):
+        nonlocal connection_count, last_queue_log, dropped_bridge
         await tune(writer)
         try:
-            writer.write(auth)
-            await writer.drain()
-            await asyncio.wait_for(pool.put((reader, writer)), timeout=5)
+            await asyncio.wait_for(connection_pool.put((reader, writer)), timeout=5)
             connection_count += 1
         except asyncio.TimeoutError:
-            bridge_queue_suppressed += 1
+            dropped_bridge += 1
             now = time.time()
-            if now - last_bridge_queue_log >= LOG_THROTTLE_SEC:
+            if now - last_queue_log >= LOG_THROTTLE_SEC:
                 logger.debug(
-                    f"Bridge queue full (pool={pool.qsize()}/{pool.maxsize}, dropped={bridge_queue_suppressed})"
+                    f"Bridge queue full (pool={connection_pool.qsize()}/{connection_pool.maxsize}, dropped={dropped_bridge})"
                 )
-                last_bridge_queue_log = now
-                bridge_queue_suppressed = 0
+                last_queue_log = now
+                dropped_bridge = 0
             writer.close()
-        except asyncio.CancelledError:
-            writer.close()
-            raise
         except Exception as e:
-            logger.error(f"Bridge error: {e}")
+            logger.debug(f"Bridge put failed: {e}")
             writer.close()
-    async def handle_user(reader, writer, port):
-        deadline = time.time() + BRIDGE_PICK_TIMEOUT
+    async def get_healthy_bridge(deadline_sec=BRIDGE_PICK_TIMEOUT):
+        deadline = time.time() + deadline_sec
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
-                logger.debug(f"No healthy bridge available for port {port}")
-                writer.close()
-                return
+                return None, None
             try:
-                e_reader, e_writer = await asyncio.wait_for(pool.get(), timeout=remaining)
+                e_reader, e_writer = await asyncio.wait_for(connection_pool.get(), timeout=remaining)
             except asyncio.TimeoutError:
-                logger.debug(f"No available bridge for port {port}")
-                writer.close()
-                return
-
+                return None, None
             if e_writer.is_closing() or e_reader.at_eof():
                 try:
                     e_writer.close()
                 except Exception:
                     pass
                 continue
-
-            try:
-                e_writer.write(struct.pack("!H", port))
-                await asyncio.wait_for(e_writer.drain(), timeout=BRIDGE_SEND_TIMEOUT)
-                await asyncio.gather(
-                    pipe(reader, e_writer),
-                    pipe(e_reader, writer),
-                    return_exceptions=True
-                )
-                return
-            except asyncio.TimeoutError:
-                logger.debug(f"Stale bridge send timeout for port {port}")
-                if not e_writer.is_closing():
-                    e_writer.close()
-                continue
-            except Exception as e:
-                logger.debug(f"Stale bridge skipped for port {port}: {e}")
-                if not e_writer.is_closing():
-                    e_writer.close()
-                continue
-    async def open_port(p):
-        if p in active_ports:
+            return e_reader, e_writer
+    async def handle_user_side(reader, writer, target_p):
+        await tune(writer)
+        e_reader, e_writer = await get_healthy_bridge()
+        if e_writer is None:
+            writer.close()
+            return
+        try:
+            e_writer.write(struct.pack("!H", target_p))
+            await asyncio.wait_for(e_writer.drain(), timeout=BRIDGE_SEND_TIMEOUT)
+            await asyncio.gather(
+                pipe(reader, e_writer),
+                pipe(e_reader, writer),
+                return_exceptions=True,
+            )
+        except Exception as e:
+            logger.debug(f"Bridge handoff failed on port {target_p}: {e}")
+            if not e_writer.is_closing():
+                e_writer.close()
+            writer.close()
+    async def open_new_port(p):
+        if p in active_servers:
             return
         try:
             srv = await asyncio.start_server(
-                lambda r, w, p=p: handle_user(r, w, p),
+                lambda r, w, p=p: handle_user_side(r, w, p),
                 "0.0.0.0",
                 p,
-                limit=BUFFER_SIZE
+                backlog=5000,
+                limit=BUFFER_SIZE,
             )
             asyncio.create_task(srv.serve_forever())
-            active_ports[p] = srv
-            BeautifulUI.print_success(f"Port {p} opened")
+            active_servers[p] = srv
+            BeautifulUI.print_success(f"Port Active: {p}")
         except Exception as e:
-            logger.error(f"Failed to open port {p}: {e}")
-    async def close_unused(new_ports):
-        to_close = []
-        for p, srv in list(active_ports.items()):
+            logger.error(f"Error opening port {p}: {e}")
+    async def close_missing_ports(new_ports):
+        for p, srv in list(active_servers.items()):
             if p not in new_ports:
                 srv.close()
                 await srv.wait_closed()
-                to_close.append(p)
-                BeautifulUI.print_warning(f"Port {p} closed")
-        for p in to_close:
-            del active_ports[p]
-    async def handle_sync(reader, writer):
+                del active_servers[p]
+                BeautifulUI.print_warning(f"Port Closed: {p}")
+    async def handle_sync_conn(reader, writer):
         try:
-            client_auth = await asyncio.wait_for(
-                reader.readexactly(32),
-                timeout=CONN_TIMEOUT
-            )
-            if client_auth != auth:
-                logger.warning("Invalid auth from sync")
-                writer.close()
-                return
-            count_data = await asyncio.wait_for(
-                reader.readexactly(2),
-                timeout=CONN_TIMEOUT
-            )
-            count = struct.unpack("!H", count_data)[0]
-            if count > 1000:
-                logger.warning(f"Too many ports: {count}")
-                writer.close()
-                return
+            header = await asyncio.wait_for(reader.readexactly(1), timeout=CONN_TIMEOUT)
+            count = struct.unpack("!B", header)[0]
             ports = set()
             for _ in range(count):
-                port_data = await asyncio.wait_for(
-                    reader.readexactly(2),
-                    timeout=CONN_TIMEOUT
-                )
-                p = struct.unpack("!H", port_data)[0]
+                p_data = await asyncio.wait_for(reader.readexactly(2), timeout=CONN_TIMEOUT)
+                p = struct.unpack("!H", p_data)[0]
                 if validate_port(p):
                     ports.add(p)
-                    await open_port(p)
-            await close_unused(ports)
-            logger.info(f"{Colors.GREEN}✓{Colors.END} Synced {len(ports)} ports")
-        except asyncio.TimeoutError:
-            logger.debug("Sync timeout")
+                    await open_new_port(p)
+            await close_missing_ports(ports)
+            logger.info(f"Synced {len(ports)} ports")
         except Exception as e:
-            logger.error(f"Sync error: {e}")
+            logger.debug(f"Sync read failed: {e}")
         finally:
             writer.close()
-    print()
-    BeautifulUI.print_success("🚀 BluTunnel Iran Starting...")
-    print(f"  {Colors.SERVER} Bridge Port: {Colors.CYAN}{bridge_p}{Colors.END}")
-    print(f"  {Colors.SERVER} Sync Port: {Colors.CYAN}{sync_p}{Colors.END}")
-    print()
     bridge_server = await asyncio.start_server(
-        handle_bridge, 
-        "0.0.0.0", 
-        bridge_p,
-        limit=BUFFER_SIZE
-    )
-    sync_server = await asyncio.start_server(
-        handle_sync,
+        handle_europe_bridge,
         "0.0.0.0",
-        sync_p,
-        limit=BUFFER_SIZE
+        bridge_p,
+        backlog=10000,
+        limit=BUFFER_SIZE,
     )
+    if auto_mode:
+        sync_server = await asyncio.start_server(
+            handle_sync_conn,
+            "0.0.0.0",
+            sync_p,
+            backlog=200,
+            limit=BUFFER_SIZE,
+        )
+        BeautifulUI.print_success(f"Auto-Sync Active on port {sync_p}")
+    else:
+        sync_server = None
+        manual_ports = BeautifulUI.input_with_style(
+            "Enter ports manually (e.g. 80,443,2083)",
+            "P",
+        )
+        for p_str in manual_ports.split(","):
+            p_str = p_str.strip()
+            if p_str.isdigit():
+                p = int(p_str)
+                if validate_port(p):
+                    await open_new_port(p)
+        BeautifulUI.print_success("Manual ports opened")
     async def show_stats():
         while running:
             uptime = time.time() - start_time
             hours = int(uptime // 3600)
             minutes = int((uptime % 3600) // 60)
             seconds = int(uptime % 60)
-            print(f"\r  {Colors.CYAN}⏱️ Uptime: {Colors.GREEN}{hours:02d}:{minutes:02d}:{seconds:02d}{Colors.END} {Colors.PING} Connections: {Colors.YELLOW}{connection_count}{Colors.END} {Colors.SERVER} Ports: {Colors.YELLOW}{len(active_ports)}{Colors.END}", end="")
+            print(
+                f"\r  {Colors.CYAN}Uptime: {Colors.GREEN}{hours:02d}:{minutes:02d}:{seconds:02d}{Colors.END} "
+                f"{Colors.PING} Connections: {Colors.YELLOW}{connection_count}{Colors.END} "
+                f"{Colors.SERVER} Ports: {Colors.YELLOW}{len(active_servers)}{Colors.END}",
+                end="",
+            )
             await asyncio.sleep(1)
     stats_task = asyncio.create_task(show_stats())
+    print()
+    BeautifulUI.print_success("BluTunnel Iran Starting")
+    print(f"  {Colors.SERVER} Bridge Port: {Colors.CYAN}{bridge_p}{Colors.END}")
+    print(f"  {Colors.SERVER} Sync Port: {Colors.CYAN}{sync_p}{Colors.END}")
+    print()
     try:
-        async with bridge_server, sync_server:
-            await asyncio.Future()
+        if sync_server:
+            async with bridge_server, sync_server:
+                await asyncio.Future()
+        else:
+            async with bridge_server:
+                await asyncio.Future()
     except KeyboardInterrupt:
         print("\n")
         BeautifulUI.print_warning("Shutting down gracefully...")
         running = False
         stats_task.cancel()
-        for srv in active_ports.values():
+        for srv in list(active_servers.values()):
             srv.close()
             await srv.wait_closed()
-        BeautifulUI.print_success("✅ Shutdown complete")
-
+        BeautifulUI.print_success("Shutdown complete")
 async def server_check():
     BeautifulUI.print_banner()
     BeautifulUI.print_section("Server Check", "🌍")
@@ -1316,17 +1264,9 @@ def main():
                 elif choice == "2":
                     handle_show_key(config)
                 elif choice == "3":
-                    if "key" not in config:
-                        BeautifulUI.print_error("Create KEY first")
-                        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
-                        continue
-                    asyncio.run(start_europe(config["key"]))
+                    asyncio.run(start_europe(config.get("key", "")))
                 elif choice == "4":
-                    if "key" not in config:
-                        BeautifulUI.print_error("Create KEY first")
-                        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
-                        continue
-                    asyncio.run(start_iran(config["key"]))
+                    asyncio.run(start_iran(config.get("key", "")))
                 elif choice == "5":
                     asyncio.run(server_check())
                 elif choice == "6":
