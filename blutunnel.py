@@ -654,8 +654,24 @@ async def start_europe(key):
     running = True
     start_time = time.time()
     connection_count = 0
+    last_sync_error_log = 0.0
+    last_bridge_error_log = 0.0
+
+    async def preflight_port(ip, port, name):
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(ip, port),
+                timeout=3
+            )
+            writer.close()
+            await writer.wait_closed()
+            BeautifulUI.print_success(f"{name} reachable: {ip}:{port}")
+            return True
+        except Exception as e:
+            BeautifulUI.print_error(f"{name} unreachable: {ip}:{port} ({e})")
+            return False
     async def sync_task():
-        nonlocal running
+        nonlocal running, last_sync_error_log
         while running:
             try:
                 reader, writer = await asyncio.open_connection(iran_ip, sync_p)
@@ -669,10 +685,13 @@ async def start_europe(key):
                 await writer.wait_closed()
                 logger.info(f"{Colors.GREEN}✓{Colors.END} Synced {len(ports)} ports")
             except Exception as e:
-                logger.error(f"Sync failed: {e}")
+                now = time.time()
+                if now - last_sync_error_log >= 10:
+                    logger.error(f"Sync failed: {e}")
+                    last_sync_error_log = now
             await asyncio.sleep(5)
     async def reverse_worker(semaphore, worker_id):
-        nonlocal running, connection_count
+        nonlocal running, connection_count, last_bridge_error_log
         backoff = 1
         while running:
             try:
@@ -716,10 +735,25 @@ async def start_europe(key):
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 10)
             except Exception as e:
-                logger.error(f"Worker {worker_id} error: {e}")
+                err_no = getattr(e, "errno", None)
+                if err_no in (111, 61, 10061):
+                    now = time.time()
+                    if now - last_bridge_error_log >= 10:
+                        logger.warning(f"Bridge unreachable {iran_ip}:{bridge_p} ({e})")
+                        last_bridge_error_log = now
+                else:
+                    logger.error(f"Worker {worker_id} error: {e}")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 10)
     semaphore = asyncio.Semaphore(MAX_POOL)
+    print()
+    BeautifulUI.print_info("Preflight", "Checking Bridge/Sync connectivity", "i")
+    bridge_ok = await preflight_port(iran_ip, bridge_p, "Bridge port")
+    sync_ok = await preflight_port(iran_ip, sync_p, "Sync port")
+    if not (bridge_ok and sync_ok):
+        BeautifulUI.print_warning("Start Iran mode first and open firewall for Bridge/Sync ports.")
+        input(f"{Colors.GRAY}Press Enter...{Colors.END}")
+        return
     print()
     BeautifulUI.print_success("🚀 BluTunnel Europe Starting...")
     print(f"  {Colors.SERVER} Target: {Colors.CYAN}{iran_ip}:{bridge_p}{Colors.END}")
