@@ -209,6 +209,29 @@ class BeautifulUI:
         print(f"{Colors.CYAN}└─" + "─┴─".join(["─" * w for w in col_widths]) + "─┘{Colors.END}")
 
     @staticmethod
+    def print_table(data, headers):
+        """Override legacy renderer to avoid malformed ANSI/table output."""
+        if not data:
+            return
+        col_widths = [len(h) for h in headers]
+        for row in data:
+            for i, cell in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(str(cell)))
+        sep = "+-" + "-+-".join("-" * w for w in col_widths) + "-+"
+        print(f"{Colors.CYAN}{sep}{Colors.END}")
+        header_cells = []
+        for i, h in enumerate(headers):
+            header_cells.append(f"{Colors.YELLOW}{h:^{col_widths[i]}}{Colors.END}")
+        print("| " + " | ".join(header_cells) + " |")
+        print(f"{Colors.CYAN}{sep}{Colors.END}")
+        for row in data:
+            row_cells = []
+            for i, cell in enumerate(row):
+                row_cells.append(f"{Colors.WHITE}{str(cell):^{col_widths[i]}}{Colors.END}")
+            print("| " + " | ".join(row_cells) + " |")
+        print(f"{Colors.CYAN}{sep}{Colors.END}")
+
+    @staticmethod
     def show_menu():
         BeautifulUI.print_banner()
         BeautifulUI.print_section("Main Menu", "🎯")
@@ -371,6 +394,155 @@ class ServerDetector:
             print()
             BeautifulUI.print_info("Location", f"{country} - {city}", "🌍")
             BeautifulUI.print_info("ISP", asn, "🏢")
+
+    async def get_nodes(self, cache_ttl=60):
+        now = time.time()
+        if self.nodes_cache and (now - self.nodes_cache_time) < cache_ttl:
+            return self.nodes_cache
+        try:
+            await self.ensure_session()
+            async with self.session.get(f"{CHECK_HOST_API}/nodes/hosts") as resp:
+                if resp.status != 200:
+                    return {}
+                data = await resp.json()
+                nodes = data.get("nodes", {})
+                if isinstance(nodes, dict):
+                    self.nodes_cache = nodes
+                    self.nodes_cache_time = now
+                    return nodes
+        except Exception as e:
+            logger.error(f"Error loading nodes: {e}")
+        return {}
+
+    @staticmethod
+    def _extract_ping_entries(value):
+        entries = []
+
+        def walk(node):
+            if not isinstance(node, list):
+                return
+            if node and isinstance(node[0], str):
+                status = node[0]
+                ping_time = node[1] if len(node) > 1 else None
+                ip = node[2] if len(node) > 2 else "N/A"
+                entries.append((status, ping_time, ip))
+                return
+            for child in node:
+                walk(child)
+
+        walk(value)
+        return entries
+
+    async def check_ping(self, host, max_nodes=None):
+        results = {
+            "success": False,
+            "ping_data": {},
+            "is_access": None,
+            "avg_ping": None,
+            "rows": []
+        }
+        try:
+            await self.ensure_session()
+            nodes = await self.get_nodes()
+            total_nodes = len(nodes) if isinstance(nodes, dict) else 0
+
+            params = {"host": host}
+            if max_nodes is None:
+                # Use all available check-host nodes by default.
+                params["max_nodes"] = total_nodes if total_nodes > 0 else 1000
+            else:
+                params["max_nodes"] = max_nodes
+
+            async with self.session.get(f"{CHECK_HOST_API}/check-ping", params=params) as resp:
+                if resp.status != 200:
+                    return results
+                data = await resp.json()
+                if not data.get("ok"):
+                    return results
+                request_id = data.get("request_id")
+                if not request_id:
+                    return results
+
+            await asyncio.sleep(3)
+            async with self.session.get(f"{CHECK_HOST_API}/check-result/{request_id}") as result_resp:
+                if result_resp.status != 200:
+                    return results
+                ping_data = await result_resp.json()
+
+            total_ping = 0.0
+            ping_count = 0
+            iran_pings = 0
+            foreign_pings = 0
+            rows = []
+
+            for node, node_results in ping_data.items():
+                node_code = node.split('.')[0].upper()
+                entries = self._extract_ping_entries(node_results)
+                if not entries:
+                    rows.append([node_code, "N/A", "N/A", "No data"])
+                    continue
+
+                for status, ping_time, ip in entries:
+                    if status == "OK" and isinstance(ping_time, (int, float)):
+                        rows.append([node_code, f"{ping_time:.2f}ms", ip if ip else "N/A", "Success"])
+                        total_ping += ping_time
+                        ping_count += 1
+                        if "ir" in node.lower() or "tehran" in node.lower():
+                            iran_pings += 1
+                        else:
+                            foreign_pings += 1
+                    else:
+                        status_text = str(status) if status is not None else "Unknown"
+                        ping_label = "Timeout" if status_text.upper() == "TIMEOUT" else "N/A"
+                        rows.append([node_code, ping_label, "N/A", status_text])
+
+            results["success"] = True
+            results["ping_data"] = ping_data
+            results["rows"] = rows
+            if ping_count > 0:
+                results["avg_ping"] = total_ping / ping_count
+                results["is_access"] = (foreign_pings == 0 and iran_pings > 0)
+
+        except Exception as e:
+            logger.error(f"Ping check error: {e}")
+        return results
+
+    async def display_server_info(self, host):
+        BeautifulUI.print_section("Server Analysis", "S")
+        print(f"  {Colors.PING} Analyzing: {Colors.CYAN}{host}{Colors.END}\n")
+        BeautifulUI.print_info("Status", "Checking ping...", "P")
+        ping_results = await self.check_ping(host)
+
+        if ping_results["success"]:
+            if ping_results["avg_ping"] is not None:
+                BeautifulUI.print_success(f"Average Ping: {ping_results['avg_ping']:.2f}ms")
+            else:
+                BeautifulUI.print_warning("No successful ping responses")
+            print()
+
+            if ping_results["is_access"] is True:
+                BeautifulUI.print_error("ACCESS SERVER DETECTED")
+                BeautifulUI.print_warning("This IP only responds to pings from Iran")
+                BeautifulUI.print_warning("It may be an access/server with routing restrictions")
+            elif ping_results["is_access"] is False:
+                BeautifulUI.print_success("This is a normal server (international connectivity)")
+            else:
+                BeautifulUI.print_warning("Connectivity type could not be determined")
+
+            print()
+            BeautifulUI.print_info("Ping Details", f"{len(ping_results['ping_data'])} nodes", "I")
+            if ping_results["rows"]:
+                BeautifulUI.print_table(ping_results["rows"], ["Node", "Ping", "IP", "Status"])
+            else:
+                BeautifulUI.print_warning("No node results returned")
+        else:
+            BeautifulUI.print_error("Failed to check server")
+
+        country, city, asn = await self.get_server_info(host)
+        if country:
+            print()
+            BeautifulUI.print_info("Location", f"{country} - {city}", "L")
+            BeautifulUI.print_info("ISP", asn, "D")
 
 def validate_port(port):
     return 1 <= port <= 65535
